@@ -6,8 +6,14 @@
 #include <unistd.h>
 #include <string.h>
 
+/* Read all available inotify events from the file descriptor 'fd'.
+    wd is the table of watch descriptors for the directories in argv.
+    argc is the length of wd and argv.
+    argv is the list of watched directories.
+    Entry 0 of wd and argv is unused. */
+
 static void
-handle_events(int fd, int mon_fd, const char* monitor_floder)
+handle_events(int fd, int wd, const char* monitor_floder)
 {
     /* Some systems cannot read integer variables if they are not
         properly aligned. On other systems, incorrect alignment may
@@ -56,8 +62,9 @@ handle_events(int fd, int mon_fd, const char* monitor_floder)
                 printf("IN_CLOSE_WRITE: ");
 
             /* Print the name of the watched directory. */
-            if (mon_fd == event->wd) {
+            if (wd == event->wd) {
                 printf("%s/", monitor_floder);
+                break;
             }
 
             /* Print the name of the file. */
@@ -78,37 +85,50 @@ handle_events(int fd, int mon_fd, const char* monitor_floder)
 int
 main(int argc, char* argv[])
 {
-    // 需要监控的文件夹或者文件
+    char buf;
+    int fd, i, poll_num;
+    nfds_t nfds;
+    struct pollfd fds[2];
+
     const char* monitor_floder = "/tmp";
+
+    printf("Press ENTER key to terminate.\n");
+
     /* Create the file descriptor for accessing the inotify API. */
-    // 设置成非阻塞模式
-    int fd = inotify_init1(IN_NONBLOCK);
+    fd = inotify_init1(IN_NONBLOCK);
     if (fd == -1) {
         perror("inotify_init1");
         exit(EXIT_FAILURE);
     }
 
+
     /* Mark directories for events
         - file was opened
         - file was closed */
-    int mon_fd = inotify_add_watch(fd, monitor_floder,
-                                IN_OPEN | IN_CLOSE);//watch descriptors.
-    if (mon_fd == -1) {
+
+    int wd = inotify_add_watch(fd, monitor_floder,
+                                    IN_OPEN | IN_CLOSE);
+    if(wd == -1){
         fprintf(stderr, "Cannot watch '%s': %s\n",
-                monitor_floder, strerror(errno));
-        exit(EXIT_FAILURE);
+                    monitor_floder, strerror(errno));
+            exit(EXIT_FAILURE);
     }
 
     /* Prepare for polling. */
-    nfds_t nfds = 1;
-    struct pollfd fds[1];
-    fds[0].fd = fd;       /* Console input */
+
+    nfds = 2;
+
+    fds[0].fd = STDIN_FILENO;       /* Console input */
     fds[0].events = POLLIN;
 
+    fds[1].fd = fd;                 /* Inotify input */
+    fds[1].events = POLLIN;
+
     /* Wait for events and/or terminal input. */
+
     printf("Listening for events.\n");
     while (1) {
-        int poll_num = poll(fds, nfds, -1);
+        poll_num = poll(fds, nfds, -1);
         if (poll_num == -1) {
             if (errno == EINTR)
                 continue;
@@ -117,9 +137,21 @@ main(int argc, char* argv[])
         }
 
         if (poll_num > 0) {
+
             if (fds[0].revents & POLLIN) {
+
+                /* Console input is available. Empty stdin and quit. */
+
+                while (read(STDIN_FILENO, &buf, 1) > 0 && buf != '\n')
+                    continue;
+                break;
+            }
+
+            if (fds[1].revents & POLLIN) {
+
                 /* Inotify events are available. */
-                handle_events(fd, mon_fd, monitor_floder);
+
+                handle_events(fd, wd, monitor_floder);
             }
         }
     }
